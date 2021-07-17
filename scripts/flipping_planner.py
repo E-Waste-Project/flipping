@@ -8,12 +8,12 @@ from cut_contour.msg import MoveStraightAction, MoveStraightActionGoal
 from cut_contour.msg import MeasureZAction, MeasureZActionGoal
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from cut_contour.robot_helpers import TransformServices, sample_from_func, MotionServices
-from math import sqrt, pi
+from math import sqrt, pi, fabs
 from copy import deepcopy
 
 
 class FlippingPlanner():
-    def __init__(self, flip_dist=0.04):
+    def __init__(self, flip_dist=0.00):
         self.flip_point = None
         self.arc_center_point = None
         self.flip_radius = None
@@ -31,6 +31,10 @@ class FlippingPlanner():
         self.done_pub = rospy.Publisher("/done", String, queue_size=1)
         
     def old_way(self, flip_data_msg):
+        self.flipping_ms.change_tool_status('Clamp_Off', status = 0)
+        rospy.sleep(1)
+        self.flipping_ms.change_tool_status('Clamp_On', status = 1)
+        
         print("recieved Flip Data")
         trans_flip_data = self.transform_services.transform_poses(
             "base_link", "calibrated_frame", flip_data_msg)
@@ -38,7 +42,7 @@ class FlippingPlanner():
         self.flip_point = trans_flip_data.poses[1]
         self.arc_center_point = trans_flip_data.poses[2]
                 
-        # go to flip pose   python server
+        # go to flip pose
         self.flipping_ms.move_group.set_named_target("pre_flipping_pose")
         self.flipping_ms.move_group.go()
         rospy.sleep(1)
@@ -49,9 +53,9 @@ class FlippingPlanner():
         # measure z
         poses = PoseArray()
         flip_pose = self.transform_services.lookup_transform("base_link", "flipping_upper")
-        flip_pose.position.z -= 0.05
-        poses.poses.append(flip_pose)
-        self.flipping_ms.move_to_touch(poses=poses, axis='xy')
+        poses.poses.append(deepcopy(flip_pose))
+        poses.poses[0].position.z -= 0.06
+        self.flipping_ms.move_to_touch(poses=poses, axis='y', force_thresh=2)
         rospy.loginfo("Touched !!!!!")
         rospy.sleep(1)
         
@@ -75,7 +79,7 @@ class FlippingPlanner():
         flip_pose = self.transform_services.lookup_transform("base_link", "flipping_upper")
         flip_pose.position.x += 0.2
         poses.poses.append(flip_pose)
-        self.flipping_ms.move_to_touch(poses=poses, axis='z', force_thresh=15)
+        self.flipping_ms.move_to_touch(poses=poses, axis='z', force_thresh=10)
         rospy.loginfo("Touched !!!!!")
         
         # generate plan
@@ -83,31 +87,44 @@ class FlippingPlanner():
         poses = PoseArray()
         self.flip_point = self.transform_services.lookup_transform("base_link", "flipping_upper")
         self.flip_point.position.x -= 0.005
-        self.flip_radius = self.arc_center_point.position.x - self.flip_point.position.x
+        # self.flip_radius = fabs(self.arc_center_point.position.x - self.flip_point.position.x)
+        self.flip_radius = fabs(self.laptop_center.position.x - self.flip_point.position.x) * 2
         print("RADIUS = ", self.flip_radius)
-        x_arr, z_arr = sample_from_func(
-            self.circle_func, self.flip_point.position.x, self.arc_center_point.position.x + self.flip_dist, nsteps)
-        
-        start_orientation = [self.flip_point.orientation.x, self.flip_point.orientation.y,
-                            self.flip_point.orientation.z, self.flip_point.orientation.w]
-        start_orientation = euler_from_quaternion(start_orientation)
+        z_arr, y_arr = sample_from_func(
+            lambda z: self.circle_func(z, self.flip_radius + 0.005, self.flip_radius, 0),
+            start = -0.005,
+            stop = self.flip_radius + self.flip_dist,
+            number_of_points = nsteps)
+        print("flip_point = ", self.flip_point.position.x)
+        print("center_point = ", self.arc_center_point.position.x)
+        # start_orientation = [self.flip_point.orientation.x, self.flip_point.orientation.y,
+        #                     self.flip_point.orientation.z, self.flip_point.orientation.w]
+        # start_orientation = euler_from_quaternion(start_orientation)
+       
         
         plan = PoseArray()
         i = 0
-        for x, z in zip(x_arr, z_arr):
-            pose_goal = deepcopy(self.flip_point)
-            pose_goal.position.x = x
+        for y, z in zip(y_arr, z_arr):
+            # pose_goal = deepcopy(self.flip_point)
+            pose_goal = Pose()
+            pose_goal.position.x = 0
+            pose_goal.position.y = -y
             pose_goal.position.z = z
-            new_orientation = list(deepcopy(start_orientation))
-            new_orientation[1] -= i*(pi/nsteps) * 0.4
-            quat = quaternion_from_euler(new_orientation[0], new_orientation[1], new_orientation[2])
-            pose_goal.orientation.x = quat[0]
-            pose_goal.orientation.y = quat[1]
-            pose_goal.orientation.z = quat[2]
-            pose_goal.orientation.w = quat[3]
+            q = quaternion_from_euler(i*(pi/nsteps) * 0.1, 0, 0)
+            pose_goal.orientation.x = q[0]
+            pose_goal.orientation.y = q[1]
+            pose_goal.orientation.z = q[2]
+            pose_goal.orientation.w = q[3]
+            # new_orientation = list(deepcopy(start_orientation))
+            # new_orientation[1] -= i*(pi/nsteps) * 0.4
+            # quat = quaternion_from_euler(new_orientation[0], new_orientation[1], new_orientation[2])
+            # pose_goal.orientation.x = quat[0]
+            # pose_goal.orientation.y = quat[1]
+            # pose_goal.orientation.z = quat[2]
+            # pose_goal.orientation.w = quat[3]
             plan.poses.append(pose_goal)
             i+=1
-            
+        plan = self.transform_services.transform_poses("base_link", "flipping_upper", plan)
         
         # execute first half plan
         result = self.flipping_ms.move_straight(plan, vel_scale=0.1, acc_scale=0.1)
@@ -117,8 +134,13 @@ class FlippingPlanner():
         else:
             rospy.sleep(1)
         
+        # Make pad return behind wall.
+        self.stepper_pub.publish(Int32(data=2))
+        rospy.wait_for_message("/arduino_to_pc", Int32)
+        
+        
         pose = self.transform_services.lookup_transform("base_link", "flipping_upper")
-        pose.position.x += 0.08
+        pose.position.x += 0.06
         pose_array = PoseArray()
         pose_array.poses.append(pose)
         pose_array.header.frame_id = "base_link"
@@ -128,6 +150,8 @@ class FlippingPlanner():
             rospy.sleep(5)
         else:
             rospy.sleep(1) 
+        
+        
         # go to flip posee
         self.flipping_ms.move_group.set_named_target("pre_flipping_pose")
         self.flipping_ms.move_group.go()
@@ -143,6 +167,10 @@ class FlippingPlanner():
         
         # wait for the stepper to finish
         rospy.wait_for_message("/arduino_to_pc", Int32)
+        
+        self.flipping_ms.change_tool_status('Clamp_Off', status = 1)
+        rospy.sleep(1)
+        self.flipping_ms.change_tool_status('Clamp_On', status = 0)
         
         done_msg = String()
         done_msg.data = "Done"
@@ -189,8 +217,8 @@ class FlippingPlanner():
     
         return self.move_client.get_result()
 
-    def circle_func(self, x):
-        return sqrt(self.flip_radius**2 - (x - self.arc_center_point.position.x)**2) + self.arc_center_point.position.z
+    def circle_func(self, x, raduis, cx, cz):
+        return sqrt(raduis**2 - (x - cx)**2) + cz
         
 if __name__ == "__main__":
     rospy.init_node("Flipping_planner")
