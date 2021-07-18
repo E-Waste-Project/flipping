@@ -31,9 +31,9 @@ class FlippingPlanner():
         self.done_pub = rospy.Publisher("/done", String, queue_size=1)
         
     def old_way(self, flip_data_msg):
-        self.flipping_ms.change_tool_status('Clamp_Off', status = 0)
+        self.flipping_ms.change_tool_status('Clamp_Off', status = 1)
         rospy.sleep(1)
-        self.flipping_ms.change_tool_status('Clamp_On', status = 1)
+        self.flipping_ms.change_tool_status('Clamp_On', status = 0)
         
         print("recieved Flip Data")
         trans_flip_data = self.transform_services.transform_poses(
@@ -168,9 +168,9 @@ class FlippingPlanner():
         # wait for the stepper to finish
         rospy.wait_for_message("/arduino_to_pc", Int32)
         
-        self.flipping_ms.change_tool_status('Clamp_Off', status = 1)
+        self.flipping_ms.change_tool_status('Clamp_Off', status = 0)
         rospy.sleep(1)
-        self.flipping_ms.change_tool_status('Clamp_On', status = 0)
+        self.flipping_ms.change_tool_status('Clamp_On', status = 1)
         
         done_msg = String()
         done_msg.data = "Done"
